@@ -55,8 +55,8 @@ that from *inside* the compositor:
 ### Automatic (recommended)
 
 ```bash
-git clone https://github.com/waylandwe/gnome-wallpaperengine-wayland.git
-cd gnome-wallpaperengine-wayland
+git clone https://github.com/waylandwe/wallpaperEngineWayland.git
+cd wallpaperEngineWayland
 chmod +x scripts/install-fedora.sh
 ./scripts/install-fedora.sh
 ```
