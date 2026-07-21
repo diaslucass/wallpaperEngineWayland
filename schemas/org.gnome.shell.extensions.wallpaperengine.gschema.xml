@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="wallpaperengine@waylandwe">
+  <schema id="org.gnome.shell.extensions.wallpaperengine"
+          path="/org/gnome/shell/extensions/wallpaperengine/">
+
+    <key name="enabled" type="b">
+      <default>true</default>
+      <summary>Enable animated wallpaper</summary>
+      <description>Master switch. When off, no engine process is spawned and the static GNOME wallpaper is shown.</description>
+    </key>
+
+    <key name="engine" type="s">
+      <choices>
+        <choice value="auto"/>
+        <choice value="wallpaperengine"/>
+        <choice value="mpv"/>
+      </choices>
+      <default>'auto'</default>
+      <summary>Rendering engine</summary>
+      <description>Which backend renders the wallpaper. "auto" picks linux-wallpaperengine when a Workshop scene is configured and the binary is installed, otherwise mpv.</description>
+    </key>
+
+    <key name="video-path" type="s">
+      <default>''</default>
+      <summary>Video file path</summary>
+      <description>Absolute path to a local MP4, WebM, MKV or GIF file used by the mpv backend.</description>
+    </key>
+
+    <key name="wallpaper-id" type="s">
+      <default>''</default>
+      <summary>Wallpaper Engine scene</summary>
+      <description>Steam Workshop item ID (e.g. 1845706469) or an absolute path to a scene directory / .pkg file, used by the linux-wallpaperengine backend.</description>
+    </key>
+
+    <key name="workshop-path" type="s">
+      <default>'~/.local/share/Steam/steamapps/workshop/content/431960'</default>
+      <summary>Steam Workshop content directory</summary>
+      <description>Directory containing downloaded Wallpaper Engine Workshop items (one numeric folder per item).</description>
+    </key>
+
+    <key name="assets-path" type="s">
+      <default>''</default>
+      <summary>Wallpaper Engine assets directory</summary>
+      <description>Optional path to the "assets" folder shipped with the Windows Wallpaper Engine installation. Leave empty to let linux-wallpaperengine auto-detect it from the Steam library.</description>
+    </key>
+
+    <key name="wallpaperengine-path" type="s">
+      <default>'linux-wallpaperengine'</default>
+      <summary>linux-wallpaperengine binary</summary>
+      <description>Command name or absolute path of the linux-wallpaperengine executable.</description>
+    </key>
+
+    <key name="mpv-path" type="s">
+      <default>'mpv'</default>
+      <summary>mpv binary</summary>
+      <description>Command name or absolute path of the mpv executable.</description>
+    </key>
+
+    <key name="mute" type="b">
+      <default>true</default>
+      <summary>Mute audio</summary>
+      <description>Silence all wallpaper audio regardless of the volume setting.</description>
+    </key>
+
+    <key name="volume" type="i">
+      <range min="0" max="100"/>
+      <default>50</default>
+      <summary>Audio volume</summary>
+      <description>Wallpaper audio volume in percent, used when not muted.</description>
+    </key>
+
+    <key name="fps" type="i">
+      <range min="1" max="240"/>
+      <default>60</default>
+      <summary>FPS cap</summary>
+      <description>Maximum frames per second the wallpaper is rendered at. Lower values save GPU/CPU and battery.</description>
+    </key>
+
+    <key name="monitor-index" type="i">
+      <range min="-1" max="15"/>
+      <default>-1</default>
+      <summary>Target monitor</summary>
+      <description>Index of the monitor the wallpaper is rendered on. -1 means the primary monitor.</description>
+    </key>
+
+    <key name="scaling" type="s">
+      <choices>
+        <choice value="fit"/>
+        <choice value="fill"/>
+        <choice value="stretch"/>
+      </choices>
+      <default>'fill'</default>
+      <summary>Scaling mode</summary>
+      <description>How the wallpaper is fitted to the monitor: "fit" letterboxes preserving aspect ratio, "fill" crops preserving aspect ratio, "stretch" ignores aspect ratio.</description>
+    </key>
+
+  </schema>
+</schemalist>

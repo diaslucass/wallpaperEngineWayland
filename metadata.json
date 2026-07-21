@@ -1,0 +1,18 @@
+{
+    "uuid": "wallpaperengine@waylandwe",
+    "name": "Wallpaper Engine for Wayland",
+    "description": "Animated wallpapers and Steam Wallpaper Engine scenes on GNOME Wayland. Uses linux-wallpaperengine for Steam Workshop scenes and mpv (hardware accelerated) for MP4/WebM/GIF wallpapers. Rendering is embedded behind desktop icons and windows, and is suspended automatically on lock screen to save GPU/CPU.",
+    "version": 1,
+    "shell-version": [
+        "45",
+        "46",
+        "47",
+        "48"
+    ],
+    "session-modes": [
+        "user"
+    ],
+    "settings-schema": "org.gnome.shell.extensions.wallpaperengine",
+    "gettext-domain": "wallpaperengine@waylandwe",
+    "url": "https://github.com/waylandwe/gnome-wallpaperengine-wayland"
+}
