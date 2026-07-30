@@ -6,12 +6,30 @@ scenes** on **Fedora Linux under Wayland**.
 | | |
 |---|---|
 | **UUID** | `wallpaperengine@waylandwe` |
-| **GNOME Shell** | 45, 46, 47, 48 (modern ESM architecture) |
+| **GNOME Shell** | 45 – 50 (modern ESM architecture) |
 | **Display server** | Wayland (Mutter) |
 | **Backends** | [`linux-wallpaperengine`](https://github.com/Almamu/linux-wallpaperengine) (Steam Workshop scenes) and `mpv` (MP4 / WebM / MKV / GIF, hardware accelerated via VA-API / NVDEC) |
 | **Preferences UI** | GTK4 + Libadwaita (`Adw.PreferencesWindow`) |
 
 **📚 Full documentation:** [docs/index.md](docs/index.md) — [Installation](docs/installation.md) · [Usage](docs/usage.md) · [Configuration Reference](docs/configuration.md) · [Architecture](docs/architecture.md) · [Development](docs/development.md) · [Troubleshooting & FAQ](docs/troubleshooting.md)
+
+## Recent changes
+
+- **Added GNOME Shell 49 and 50 support** alongside the existing 45–48 range.
+- **The renderer now spawns as a genuine Wayland compositor client** via
+  `Meta.WaylandClient`, rather than as an ordinary background process, with an
+  automatic fallback for setups where that API isn't present.
+- **Window identity is now resolved authoritatively**, via
+  `WaylandClient.owns_window()`, instead of relying only on PID/title heuristics
+  (which are kept as a fallback).
+- **The wallpaper no longer behaves like a regular application.** It is filtered out
+  of the Overview, workspace thumbnails, Alt-Tab, the dock, and the window list, and
+  it can no longer steal keyboard focus or get raised above your windows — clicking
+  on the desktop no longer switches you to another app.
+- **Fixed a background-stacking race** where GNOME could recreate its static
+  background actors after the video was adopted (e.g. right after login) and bury
+  the wallpaper underneath them; the extension's actor is now re-pinned to the top
+  of the background layer whenever that happens.
 
 ## How it works
 
@@ -20,20 +38,31 @@ wallpaper tools use on wlroots compositors (Sway, Hyprland, …). This extension
 that from *inside* the compositor:
 
 1. It spawns the renderer (`linux-wallpaperengine` in windowed mode, or `mpv` with a
-   private Wayland app-id) as a detached background subprocess — never blocking the
-   GNOME Shell main thread.
-2. When the renderer's window appears, the extension matches it by **PID** (with an
-   app-id/title fallback), sizes it to the target monitor, sticks it to all
-   workspaces, and **reparents its compositor actor into GNOME Shell's background
-   group** — so the video sits strictly *behind* desktop icons and every application
-   window, exactly like a real wallpaper.
-3. Rendering is suspended automatically to save GPU/CPU:
+   private Wayland app-id) through Mutter's own `Meta.WaylandClient`, so the process
+   is a compositor-native client rather than an ordinary background subprocess
+   (falling back to a plain `Gio.Subprocess` on setups where that API isn't
+   available). It never blocks the GNOME Shell main thread.
+2. When the renderer's window appears, the extension confirms ownership
+   authoritatively via `WaylandClient.owns_window()` (falling back to PID, then
+   app-id/title matching), sizes it to the target monitor, and **reparents its
+   compositor actor into GNOME Shell's persistent background group** — so the video
+   sits strictly *behind* desktop icons and every application window, on every
+   workspace, exactly like a real wallpaper. The actor is re-pinned above any
+   background GNOME creates afterwards (wallpaper changes, monitor changes, login),
+   so it can never end up hidden behind a static background image.
+3. The renderer window is fully suppressed from the rest of the shell: it is
+   filtered out of the Overview, workspace thumbnails, Alt-Tab, the dock, and the
+   window list, and it can never steal focus or get raised above your windows — a
+   click that lands on the desktop returns focus to whatever you were using instead
+   of switching to it. In short, it behaves like a wallpaper, not like an app
+   running alongside your others.
+4. Rendering is suspended automatically to save GPU/CPU:
    - **Screensaver / screen blank** → the engine process receives `SIGSTOP`
      (0% CPU/GPU) and `SIGCONT` on wake.
    - **Lock screen** → the extension declares only the `user` session mode, so GNOME
      disables it entirely on lock and the engine process is terminated; it is
      restarted automatically on unlock.
-4. If the engine crashes it is restarted automatically (up to 3 times, with the
+5. If the engine crashes it is restarted automatically (up to 3 times, with the
    counter reset after 30 s of stable runtime), and you get a desktop notification if
    it keeps failing.
 

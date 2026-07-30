@@ -9,10 +9,10 @@ import Gtk from 'gi://Gtk';
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 const ENGINE_VALUES = ['auto', 'wallpaperengine', 'mpv'];
-const ENGINE_LABELS = [_('Automatic'), _('linux-wallpaperengine'), _('mpv')];
+const engineLabels = () => [_('Automatic'), _('linux-wallpaperengine'), _('mpv')];
 
 const SCALING_VALUES = ['fit', 'fill', 'stretch'];
-const SCALING_LABELS = [_('Fit (letterbox)'), _('Fill (crop)'), _('Stretch')];
+const scalingLabels = () => [_('Fit (letterbox)'), _('Fill (crop)'), _('Stretch')];
 
 const FPS_VALUES = [30, 60];
 const FPS_LABELS = ['30 FPS', '60 FPS'];
@@ -60,7 +60,7 @@ export default class WallpaperEnginePrefs extends ExtensionPreferences {
         const engineRow = new Adw.ComboRow({
             title: _('Rendering Engine'),
             subtitle: _('Automatic uses linux-wallpaperengine for Workshop scenes, mpv otherwise'),
-            model: Gtk.StringList.new(ENGINE_LABELS),
+            model: Gtk.StringList.new(engineLabels()),
         });
         this._bindComboToStringSetting(settings, 'engine', engineRow, ENGINE_VALUES);
         group.add(engineRow);
@@ -268,7 +268,7 @@ export default class WallpaperEnginePrefs extends ExtensionPreferences {
 
         const scalingRow = new Adw.ComboRow({
             title: _('Scaling Mode'),
-            model: Gtk.StringList.new(SCALING_LABELS),
+            model: Gtk.StringList.new(scalingLabels()),
         });
         this._bindComboToStringSetting(settings, 'scaling', scalingRow, SCALING_VALUES);
         group.add(scalingRow);

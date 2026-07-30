@@ -114,7 +114,9 @@ if [[ "${SKIP_DEPS}" -eq 0 ]]; then
         pulseaudio-libs-devel \
         mpv-devel \
         wayland-devel \
-        wayland-protocols-devel
+        wayland-protocols-devel \
+        dbus-devel \
+        gmp-devel
 else
     log "Skipping package installation (--no-deps)."
 fi

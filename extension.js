@@ -6,9 +6,12 @@
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 
-import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import {Workspace} from 'resource:///org/gnome/shell/ui/workspace.js';
+import {WorkspaceThumbnail} from 'resource:///org/gnome/shell/ui/workspaceThumbnail.js';
 
 const MPV_APP_ID = 'gwe-mpv-renderer';
 const RENDERER_WM_CLASSES = [
@@ -17,6 +20,10 @@ const RENDERER_WM_CLASSES = [
     'wallpaperengine',
     'linux-wallpaperengine-window',
 ];
+
+// Bumped on every code change; logged from enable() so we can tell which
+// revision the running shell actually loaded (see the comment there).
+const CODE_REVISION = 6;
 
 const SIGTERM = 15;
 const SIGCONT = 18;
@@ -43,19 +50,31 @@ export default class WallpaperEngineExtension extends Extension {
         this._destroyed = false;
 
         this._proc = null;
+        this._waylandClient = null;
         this._procStopping = false;
         this._procStartTime = 0;
         this._paused = false;
         this._crashRetries = 0;
 
+        // Deliberately at warning level so it always reaches the journal:
+        // on Wayland the shell never re-imports extension code within a
+        // session, so this is how we verify which revision is actually live.
+        console.warn(`[wallpaperengine@waylandwe] enabled, code revision ${CODE_REVISION}`);
+
         this._rendererWindow = null;
         this._rendererActor = null;
         this._rendererUnmanagedId = 0;
+        this._rendererRaisedId = 0;
+        this._rendererFocusId = 0;
+        this._bgChildAddedId = 0;
 
         this._restartTimeoutId = 0;
         this._retryTimeoutId = 0;
         this._killTimeoutId = 0;
         this._matchTimeouts = new Set();
+
+        this._injectionManager = new InjectionManager();
+        this._installOverviewHiding();
 
         this._windowCreatedId = global.display.connect(
             'window-created', (_display, window) => this._onWindowCreated(window));
@@ -88,6 +107,11 @@ export default class WallpaperEngineExtension extends Extension {
     disable() {
         this._destroyed = true;
 
+        if (this._injectionManager) {
+            this._injectionManager.clear();
+            this._injectionManager = null;
+        }
+
         if (this._windowCreatedId) {
             global.display.disconnect(this._windowCreatedId);
             this._windowCreatedId = 0;
@@ -109,6 +133,69 @@ export default class WallpaperEngineExtension extends Extension {
         this._stopEngine(true);
 
         this._settings = null;
+    }
+
+    // Hide the renderer window from the Overview grid, workspace thumbnails
+    // and Alt-Tab. Without this GNOME treats it like any other normal
+    // window: it shows up as a selectable tile, and clicking/hovering into
+    // it makes GNOME try to focus a window that isn't really meant to be
+    // interacted with, which looks like an involuntary Alt-Tab.
+    _installOverviewHiding() {
+        // The matcher must work the moment the window first appears (the
+        // Overview registers new windows before our polling-based adoption
+        // finishes), hence _windowMatchesRenderer rather than only checking
+        // the adopted-window reference. Never let an exception escape into
+        // the shell's UI code: misidentifying a window as "not ours" only
+        // shows an extra tile, while a thrown error breaks the Overview.
+        const isRenderer = window => {
+            try {
+                return this._windowMatchesRenderer(window);
+            } catch (_e) {
+                return false;
+            }
+        };
+
+        this._injectionManager.overrideMethod(Workspace.prototype, '_isOverviewWindow',
+            originalMethod => function (window) {
+                return isRenderer(window) ? false : originalMethod.apply(this, [window]);
+            });
+
+        this._injectionManager.overrideMethod(WorkspaceThumbnail.prototype, '_isOverviewWindow',
+            originalMethod => function (window) {
+                return isRenderer(window) ? false : originalMethod.apply(this, [window]);
+            });
+
+        this._injectionManager.overrideMethod(Meta.Display.prototype, 'get_tab_list',
+            originalMethod => function (type, workspace) {
+                return originalMethod.apply(this, [type, workspace])
+                    .filter(window => !isRenderer(window));
+            });
+
+        this._injectionManager.overrideMethod(Shell.Global.prototype, 'get_window_actors',
+            originalMethod => function () {
+                return originalMethod.call(this)
+                    .filter(actor => !isRenderer(actor.get_meta_window()));
+            });
+
+        this._injectionManager.overrideMethod(Shell.WindowTracker.prototype, 'get_window_app',
+            originalMethod => function (window) {
+                return isRenderer(window) ? null : originalMethod.apply(this, [window]);
+            });
+
+        this._injectionManager.overrideMethod(Shell.App.prototype, 'get_windows',
+            originalMethod => function () {
+                return originalMethod.call(this).filter(window => !isRenderer(window));
+            });
+
+        this._injectionManager.overrideMethod(Shell.App.prototype, 'get_n_windows',
+            _originalMethod => function () {
+                return this.get_windows().length;
+            });
+
+        this._injectionManager.overrideMethod(Shell.AppSystem.prototype, 'get_running',
+            originalMethod => function () {
+                return originalMethod.call(this).filter(app => app.get_n_windows() > 0);
+            });
     }
 
     _clearTimeouts() {
@@ -282,16 +369,37 @@ export default class WallpaperEngineExtension extends Extension {
         if (argv === null)
             return;
 
-        let proc;
+        // Prefer spawning through Meta.WaylandClient: Mutter then knows the
+        // window belongs to a compositor-private client, and owns_window()
+        // gives us exact, race-free identification of the renderer window
+        // (mpv reports no usable wm_class/app-id on Wayland, and PID matching
+        // only works after the window exists). Fall back to a plain
+        // subprocess if that fails (e.g. X11 session).
+        let proc = null;
+        this._waylandClient = null;
         try {
-            proc = Gio.Subprocess.new(
-                argv,
-                Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
+            const flags = Gio.SubprocessFlags.STDOUT_SILENCE |
+                Gio.SubprocessFlags.STDERR_SILENCE;
+            if (Meta.is_wayland_compositor()) {
+                const launcher = new Gio.SubprocessLauncher({flags});
+                this._waylandClient =
+                    Meta.WaylandClient.new_subprocess(global.context, launcher, argv);
+                proc = this._waylandClient.get_subprocess();
+            }
+            if (proc === null)
+                proc = Gio.Subprocess.new(argv, flags);
         } catch (e) {
-            this._notifyError(
-                `Failed to launch "${argv[0]}": ${e.message}. ` +
-                'Check that the binary is installed (see scripts/install-fedora.sh).');
-            return;
+            this._waylandClient = null;
+            try {
+                proc = Gio.Subprocess.new(
+                    argv,
+                    Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
+            } catch (e2) {
+                this._notifyError(
+                    `Failed to launch "${argv[0]}": ${e2.message}. ` +
+                    'Check that the binary is installed (see scripts/install-fedora.sh).');
+                return;
+            }
         }
 
         this._proc = proc;
@@ -316,6 +424,7 @@ export default class WallpaperEngineExtension extends Extension {
         const wasStopping = this._procStopping;
         const uptime = GLib.get_monotonic_time() - this._procStartTime;
         this._proc = null;
+        this._waylandClient = null;
         this._procStopping = false;
         this._paused = false;
         this._forgetWindow();
@@ -440,6 +549,31 @@ export default class WallpaperEngineExtension extends Extension {
     }
 
     _windowMatchesRenderer(window) {
+        if (window == null)
+            return false;
+
+        // Callers aren't consistent about what they hand us: Workspace's
+        // _isOverviewWindow passes a MetaWindow, WorkspaceThumbnail's passes
+        // a MetaWindowActor. Accept both.
+        if (typeof window.get_meta_window === 'function')
+            window = window.get_meta_window();
+        if (window == null || typeof window.get_pid !== 'function')
+            return false;
+
+        // Already adopted: identity beats every heuristic.
+        if (window === this._rendererWindow)
+            return true;
+
+        // Authoritative on Wayland: Mutter tracks which client owns the window.
+        if (this._waylandClient !== null) {
+            try {
+                if (this._waylandClient.owns_window(window))
+                    return true;
+            } catch (_e) {
+                // Client already gone; fall through to the heuristics.
+            }
+        }
+
         if (this._proc === null)
             return false;
 
@@ -466,8 +600,14 @@ export default class WallpaperEngineExtension extends Extension {
         this._rendererWindow = window;
         this._rendererActor = actor;
 
-        // Keep the renderer on every workspace and out of everyone's way.
-        window.stick();
+        // Keep the renderer out of everyone's way. We deliberately do NOT call
+        // window.stick() here: once the actor is reparented into
+        // _backgroundGroup below it is already visible on every workspace
+        // (that group is a single persistent layer, not per-workspace), and
+        // marking the *window* itself sticky makes GNOME's workspace-switch
+        // slide animation (workspaceAnimation.js _syncStacking) try to look up
+        // a per-workspace stacking record for it and crash, since its actor no
+        // longer lives where the window-tracking code expects.
         window.lower();
 
         const geo = this._targetGeometry();
@@ -477,33 +617,78 @@ export default class WallpaperEngineExtension extends Extension {
         // background group. _backgroundGroup lives inside window_group at the
         // very bottom, so the video ends up above the static wallpaper but
         // strictly below desktop-icon windows and all application windows.
+        const bgGroup = Main.layoutManager._backgroundGroup;
         const parent = actor.get_parent();
-        if (parent !== Main.layoutManager._backgroundGroup) {
+        if (parent !== bgGroup) {
             if (parent)
                 parent.remove_child(actor);
-            Main.layoutManager._backgroundGroup.add_child(actor);
+            bgGroup.add_child(actor);
         }
+
+        // The shell recreates its static background actors whenever settings,
+        // monitors, or the session mode change (including right after the
+        // login transition), and new ones are added on top of the group -
+        // which would bury the video under the static wallpaper. Pin our
+        // actor to the top of the group whenever a sibling appears.
+        bgGroup.set_child_above_sibling(actor, null);
+        this._bgChildAddedId = bgGroup.connect('child-added', (group, child) => {
+            if (child !== actor)
+                group.set_child_above_sibling(actor, null);
+        });
 
         this._rendererUnmanagedId = window.connect('unmanaged', () => {
             this._forgetWindow();
         });
 
+        // A wallpaper must never hold focus or rise in the stack, yet its
+        // surface covers the whole desktop, so any click on "the desktop"
+        // actually lands on it. Undo both effects whenever they happen -
+        // without this, clicking the wallpaper visibly yanks focus off the
+        // active application (and Mutter logs stack-position assertions when
+        // it tries to restack a window whose actor lives in the background
+        // layer).
+        this._rendererRaisedId = window.connect_after('raised', () => {
+            window.lower();
+        });
+        this._rendererFocusId = window.connect('focus', () => {
+            this._refocusNormalWindow(window);
+        });
+
         // The renderer stole focus when it mapped; give it back to the most
         // recently used normal window.
-        const tabList = global.display
-            .get_tab_list(Meta.TabList.NORMAL, null)
-            .filter(w => w !== window);
-        if (tabList.length > 0)
-            tabList[0].activate(global.get_current_time());
+        this._refocusNormalWindow(window);
+
+        console.warn(`[wallpaperengine@waylandwe] adopted renderer window ` +
+            `"${window.get_title() ?? ''}" (pid ${window.get_pid()}) ` +
+            `into the background layer`);
 
         return true;
     }
 
+    _refocusNormalWindow(rendererWindow) {
+        const tabList = global.display
+            .get_tab_list(Meta.TabList.NORMAL, null)
+            .filter(w => w !== rendererWindow);
+        if (tabList.length > 0)
+            tabList[0].activate(global.get_current_time());
+    }
+
     _forgetWindow() {
-        if (this._rendererWindow !== null && this._rendererUnmanagedId) {
-            this._rendererWindow.disconnect(this._rendererUnmanagedId);
+        if (this._rendererWindow !== null) {
+            if (this._rendererUnmanagedId)
+                this._rendererWindow.disconnect(this._rendererUnmanagedId);
+            if (this._rendererRaisedId)
+                this._rendererWindow.disconnect(this._rendererRaisedId);
+            if (this._rendererFocusId)
+                this._rendererWindow.disconnect(this._rendererFocusId);
+        }
+        if (this._bgChildAddedId) {
+            Main.layoutManager._backgroundGroup.disconnect(this._bgChildAddedId);
+            this._bgChildAddedId = 0;
         }
         this._rendererUnmanagedId = 0;
+        this._rendererRaisedId = 0;
+        this._rendererFocusId = 0;
         this._rendererWindow = null;
         this._rendererActor = null;
     }
