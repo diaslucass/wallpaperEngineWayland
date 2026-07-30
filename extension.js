@@ -23,7 +23,7 @@ const RENDERER_WM_CLASSES = [
 
 // Bumped on every code change; logged from enable() so we can tell which
 // revision the running shell actually loaded (see the comment there).
-const CODE_REVISION = 6;
+const CODE_REVISION = 7;
 
 const SIGTERM = 15;
 const SIGCONT = 18;
@@ -67,6 +67,7 @@ export default class WallpaperEngineExtension extends Extension {
         this._rendererRaisedId = 0;
         this._rendererFocusId = 0;
         this._bgChildAddedId = 0;
+        this._rendererVisibleId = 0;
 
         this._restartTimeoutId = 0;
         this._retryTimeoutId = 0;
@@ -636,6 +637,27 @@ export default class WallpaperEngineExtension extends Extension {
                 group.set_child_above_sibling(actor, null);
         });
 
+        // Mutter hides a window's actor whenever its owning MetaWindow isn't
+        // on the active workspace - that hiding happens at the actor level
+        // and is independent of which Clutter group currently parents it, so
+        // reparenting alone does not make the video survive a workspace
+        // switch. We deliberately do NOT call window.stick() to solve this:
+        // that marks the *window* sticky, which makes GNOME's workspace-
+        // switch slide animation (workspaceAnimation.js's WorkspaceGroup)
+        // try to clone/track it as a normal sticky window - but its actor no
+        // longer lives where that code expects, and it crashes _syncStacking.
+        // Instead we fight the symptom directly: whenever something hides
+        // the actor, show it again immediately.
+        this._rendererVisibleId = actor.connect('notify::visible', () => {
+            if (!actor.visible) {
+                console.warn('[wallpaperengine@waylandwe] renderer actor was ' +
+                    'hidden (likely a workspace switch); forcing it visible again');
+                actor.show();
+            }
+        });
+        if (!actor.visible)
+            actor.show();
+
         this._rendererUnmanagedId = window.connect('unmanaged', () => {
             this._forgetWindow();
         });
@@ -686,6 +708,14 @@ export default class WallpaperEngineExtension extends Extension {
             Main.layoutManager._backgroundGroup.disconnect(this._bgChildAddedId);
             this._bgChildAddedId = 0;
         }
+        if (this._rendererVisibleId && this._rendererActor) {
+            try {
+                this._rendererActor.disconnect(this._rendererVisibleId);
+            } catch (_e) {
+                // Actor may already be disposed if this runs from 'unmanaged'.
+            }
+        }
+        this._rendererVisibleId = 0;
         this._rendererUnmanagedId = 0;
         this._rendererRaisedId = 0;
         this._rendererFocusId = 0;
